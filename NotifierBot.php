@@ -104,8 +104,8 @@ class NotifierBot
         $lines[] = $typeConfig['emoji'] . ' *' . $typeConfig['title'] . '*';
         $lines[] = '';
 
-        // Glavna poruka
-        $lines[] = $message;
+        // Glavna poruka (escape user content)
+        $lines[] = self::escapeMarkdown($message);
 
         // Extra parametri
         if (!empty($extras)) {
@@ -114,7 +114,7 @@ class NotifierBot
             foreach ($extras as $key => $value) {
                 $emoji = self::getExtraEmoji($key);
                 $label = self::getExtraLabel($key);
-                $lines[] = $emoji . ' ' . $label . ': ' . $value;
+                $lines[] = $emoji . ' ' . $label . ': ' . self::escapeMarkdown($value);
             }
         }
 
@@ -171,6 +171,21 @@ class NotifierBot
         ];
 
         return $labels[strtolower($key)] ?? ucfirst($key);
+    }
+
+    /**
+     * Escape Markdown v1 special characters
+     */
+    private static function escapeMarkdown(string $text): string
+    {
+        // Markdown v1 special chars: * _ ` [
+        $special = ['*', '_', '`', '['];
+
+        foreach ($special as $char) {
+            $text = str_replace($char, '\\' . $char, $text);
+        }
+
+        return $text;
     }
 
     /**
