@@ -1,0 +1,57 @@
+#!/usr/bin/env php
+<?php
+/**
+ * NotifierBot CLI Wrapper
+ *
+ * Korišćenje:
+ *   notify <type> <message> [--key=value ...]
+ *
+ * Primeri:
+ *   notify backup "Backup završen" --size="2.5MB" --file="backup.zip"
+ *   notify test "Test poruka"
+ *   notify error "Greška u sistemu" --server="web1"
+ */
+
+require_once __DIR__ . '/NotifierBot.php';
+
+// Minimum 3 argumenta: script, type, message
+if ($argc < 3) {
+    fwrite(STDERR, "Korišćenje: notify <type> <message> [--key=value ...]\n");
+    fwrite(STDERR, "\n");
+    fwrite(STDERR, "Tipovi: backup, registration, error, warning, info, success, test\n");
+    fwrite(STDERR, "\n");
+    fwrite(STDERR, "Primeri:\n");
+    fwrite(STDERR, "  notify backup \"Backup završen\" --size=\"2.5MB\" --file=\"backup.zip\"\n");
+    fwrite(STDERR, "  notify test \"Test poruka\"\n");
+    exit(1);
+}
+
+$type = $argv[1];
+$message = $argv[2];
+$extras = [];
+
+// Parsiraj --key=value argumente
+for ($i = 3; $i < $argc; $i++) {
+    $arg = $argv[$i];
+
+    if (preg_match('/^--([^=]+)=(.*)$/', $arg, $matches)) {
+        $key = $matches[1];
+        $value = $matches[2];
+        $extras[$key] = $value;
+    }
+}
+
+try {
+    $success = NotifierBot::send($type, $message, $extras);
+
+    if ($success) {
+        echo "✓ Notifikacija poslata\n";
+        exit(0);
+    } else {
+        fwrite(STDERR, "✗ Greška pri slanju notifikacije\n");
+        exit(1);
+    }
+} catch (Exception $e) {
+    fwrite(STDERR, "✗ Greška: " . $e->getMessage() . "\n");
+    exit(1);
+}
