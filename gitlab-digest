@@ -220,9 +220,9 @@ fi
 
 # --- 5. Grupisanje po autoru i projektu ---
 GROUPED=$(echo "$ALL_COMMITS" | jq '
-    group_by(.author_name) |
+    group_by(.author_email) |
     map({
-        author: .[0].author_name,
+        author: .[0].author_email | split("@")[0],
         projects: (group_by(.project) | map({
             project: .[0].project,
             commits: [.[] | {title: .title, message: .message}]
@@ -235,9 +235,11 @@ log "Grupisano po autorima. Šaljem Claude-u na sumarizaciju..."
 # --- 6. Claude CLI sumarizacija ---
 PROMPT="Dobijaš JSON podatke o Git commitovima članova tima za $DAY_LABEL.
 
-Za svakog autora napravi sažetak na SRPSKOM jeziku u sledećem formatu:
+Polje \"author\" je username (email prefix). Za svakog autora napravi sažetak na SRPSKOM jeziku. Prikaži KOMPLETNO sav posao jednog čoveka, pa tek onda prelazi na sledećeg.
 
-👤 *Ime Prezime*
+Format:
+
+👤 *username*
 
 📁 _Naziv projekta_
 Sažetak u 2-3 rečenice šta je urađeno na tom projektu.
@@ -251,6 +253,7 @@ Pravila:
 - Piši na srpskom jeziku (latinica)
 - Za svaki projekat napiši 2-3 rečenice koje opisuju šta je urađeno
 - Koristi Telegram Markdown formatiranje: *bold*, _italic_
+- Prikaži username tačno kako je dat u JSON-u (ne prevodi ga u ime i prezime)
 - Odvoji autore sa --- linijom
 - Ne ponavljaj commit poruke doslovno, već ih sažmi smisleno
 - Ako commit poruke nisu dovoljno jasne, opiši šta je najverovatnije urađeno na osnovu konteksta
