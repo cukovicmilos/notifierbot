@@ -1,0 +1,375 @@
+#!/usr/bin/env bash
+#
+# gitlab-digest - Dnevni GitLab izveštaj za tim
+#
+# Prikuplja commitove sa GitLab-a za prethodni radni dan,
+# generiše AI sažetak na srpskom jeziku putem Claude CLI,
+# i šalje rezultat u Telegram putem NotifierBot-a.
+#
+# Korišćenje:
+#   gitlab-digest            # Pošalji digest u Telegram
+#   gitlab-digest --dry-run  # Samo prikaži output u stdout
+#
+
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+LOG_DIR="/var/log/notifierbot"
+LOG_FILE="$LOG_DIR/gitlab-digest.log"
+DRY_RUN=false
+
+# Parse argumenata
+for arg in "$@"; do
+    case "$arg" in
+        --dry-run) DRY_RUN=true ;;
+        *) echo "Nepoznat argument: $arg" >&2; exit 1 ;;
+    esac
+done
+
+# Logging
+log() {
+    local msg="[$(date '+%Y-%m-%d %H:%M:%S')] $1"
+    if [[ -d "$LOG_DIR" ]]; then
+        echo "$msg" >> "$LOG_FILE"
+    fi
+    if [[ "$DRY_RUN" == true ]]; then
+        echo "$msg" >&2
+    fi
+}
+
+# Error handler - šalje notifikaciju u Telegram
+send_error() {
+    local error_msg="$1"
+    log "GREŠKA: $error_msg"
+    if [[ "$DRY_RUN" == false ]]; then
+        php -r "
+            require_once '$SCRIPT_DIR/NotifierBot.php';
+            NotifierBot::send('error', 'GitLab Digest greška: ' . \$argv[1]);
+        " -- "$error_msg" 2>/dev/null || true
+    fi
+}
+
+trap 'send_error "Skripta prekinuta na liniji $LINENO"' ERR
+
+# --- 1. Učitavanje .env ---
+log "Učitavanje konfiguracije..."
+
+ENV_FILE="$SCRIPT_DIR/.env"
+if [[ ! -f "$ENV_FILE" ]]; then
+    send_error ".env fajl ne postoji u $SCRIPT_DIR"
+    exit 1
+fi
+
+GITLAB_TOKEN=""
+GITLAB_URL=""
+TELEGRAM_BOT_TOKEN=""
+TELEGRAM_CHAT_ID=""
+
+while IFS='=' read -r key value; do
+    key=$(echo "$key" | xargs)
+    value=$(echo "$value" | xargs)
+    [[ -z "$key" || "$key" == \#* ]] && continue
+    case "$key" in
+        GITLAB_TOKEN) GITLAB_TOKEN="$value" ;;
+        GITLAB_URL) GITLAB_URL="$value" ;;
+        TELEGRAM_BOT_TOKEN) TELEGRAM_BOT_TOKEN="$value" ;;
+        TELEGRAM_CHAT_ID) TELEGRAM_CHAT_ID="$value" ;;
+    esac
+done < "$ENV_FILE"
+
+# Validacija
+missing=""
+[[ -z "$GITLAB_TOKEN" ]] && missing+="GITLAB_TOKEN "
+[[ -z "$GITLAB_URL" ]] && missing+="GITLAB_URL "
+[[ -z "$TELEGRAM_BOT_TOKEN" ]] && missing+="TELEGRAM_BOT_TOKEN "
+[[ -z "$TELEGRAM_CHAT_ID" ]] && missing+="TELEGRAM_CHAT_ID "
+
+if [[ -n "$missing" ]]; then
+    send_error "Nedostaju varijable u .env: $missing"
+    exit 1
+fi
+
+# Ukloni trailing slash
+GITLAB_URL="${GITLAB_URL%/}"
+
+log "Konfiguracija učitana. GitLab: $GITLAB_URL"
+
+# --- 2. Računanje vremenskog okvira ---
+TIME_DATA=$(php -r "
+    date_default_timezone_set('Europe/Belgrade');
+    \$dow = (int)date('N'); // 1=Mon ... 7=Sun
+    if (\$dow == 1) {
+        // Ponedeljak - gledamo petak
+        \$target = strtotime('last Friday');
+        \$label = 'petak ' . date('d.m.Y.', \$target);
+    } else {
+        // Utorak-Petak - gledamo juče
+        \$target = strtotime('yesterday');
+        \$label = date('l', \$target) . ' ' . date('d.m.Y.', \$target);
+    }
+    \$since = date('Y-m-d\T00:00:00', \$target);
+    \$until = date('Y-m-d\T23:59:59', \$target);
+    echo \"\$since|\$until|\$label\";
+")
+SINCE="${TIME_DATA%%|*}"
+rest="${TIME_DATA#*|}"
+UNTIL="${rest%%|*}"
+DAY_LABEL="${rest#*|}"
+
+log "Vremenski okvir: $SINCE do $UNTIL ($DAY_LABEL)"
+
+# --- 3. GitLab API - prikupljanje projekata ---
+log "Prikupljanje projekata sa GitLab-a..."
+
+gitlab_api() {
+    local endpoint="$1"
+    local page="${2:-1}"
+    local response
+    response=$(curl -s --fail-with-body \
+        --header "PRIVATE-TOKEN: $GITLAB_TOKEN" \
+        "${GITLAB_URL}/api/v4${endpoint}&per_page=100&page=${page}" \
+        2>&1) || {
+        send_error "GitLab API greška za ${endpoint}: $response"
+        exit 1
+    }
+    echo "$response"
+}
+
+# Prikupi sve projekte (paginirano)
+ALL_PROJECTS="[]"
+page=1
+while true; do
+    result=$(gitlab_api "/projects?membership=true&simple=true&archived=false" "$page")
+    count=$(echo "$result" | jq 'length')
+    if [[ "$count" -eq 0 ]]; then
+        break
+    fi
+    ALL_PROJECTS=$(echo "$ALL_PROJECTS" "$result" | jq -s '.[0] + .[1]')
+    if [[ "$count" -lt 100 ]]; then
+        break
+    fi
+    page=$((page + 1))
+done
+
+PROJECT_COUNT=$(echo "$ALL_PROJECTS" | jq 'length')
+log "Pronađeno $PROJECT_COUNT projekata"
+
+if [[ "$PROJECT_COUNT" -eq 0 ]]; then
+    log "Nema pronađenih projekata. Prekidam."
+    exit 0
+fi
+
+# --- 4. Prikupljanje commitova za svaki projekat ---
+log "Prikupljanje commitova..."
+
+ALL_COMMITS="[]"
+projects_with_commits=0
+
+while IFS=$'\t' read -r proj_id proj_name; do
+    page=1
+    while true; do
+        commits=$(curl -s --fail-with-body \
+            --header "PRIVATE-TOKEN: $GITLAB_TOKEN" \
+            "${GITLAB_URL}/api/v4/projects/${proj_id}/repository/commits?since=${SINCE}&until=${UNTIL}&all=true&per_page=100&page=${page}" \
+            2>&1) || {
+            log "Upozorenje: Greška pri čitanju commitova za projekat $proj_name (ID: $proj_id), preskačem"
+            break
+        }
+
+        count=$(echo "$commits" | jq 'length' 2>/dev/null || echo "0")
+        if [[ "$count" -eq 0 ]]; then
+            break
+        fi
+
+        # Dodaj ime projekta svakom commitu i filtriraj @studiopresent.com
+        filtered=$(echo "$commits" | jq --arg pname "$proj_name" '
+            [.[] | select(.author_email | test("@studiopresent\\.com$"; "i")) |
+            {
+                project: $pname,
+                author_name: .author_name,
+                author_email: .author_email,
+                title: .title,
+                message: .message,
+                created_at: .created_at
+            }]
+        ')
+
+        filtered_count=$(echo "$filtered" | jq 'length')
+        if [[ "$filtered_count" -gt 0 ]]; then
+            ALL_COMMITS=$(echo "$ALL_COMMITS" "$filtered" | jq -s '.[0] + .[1]')
+            projects_with_commits=$((projects_with_commits + 1))
+        fi
+
+        if [[ "$count" -lt 100 ]]; then
+            break
+        fi
+        page=$((page + 1))
+    done
+done < <(echo "$ALL_PROJECTS" | jq -r '.[] | [.id, .path_with_namespace] | @tsv')
+
+TOTAL_COMMITS=$(echo "$ALL_COMMITS" | jq 'length')
+log "Ukupno $TOTAL_COMMITS commitova od @studiopresent.com korisnika iz $projects_with_commits projekata"
+
+if [[ "$TOTAL_COMMITS" -eq 0 ]]; then
+    log "Nema commitova za izveštaj. Prekidam."
+    if [[ "$DRY_RUN" == true ]]; then
+        echo "Nema commitova za $DAY_LABEL"
+    fi
+    exit 0
+fi
+
+# --- 5. Grupisanje po autoru i projektu ---
+GROUPED=$(echo "$ALL_COMMITS" | jq '
+    group_by(.author_name) |
+    map({
+        author: .[0].author_name,
+        projects: (group_by(.project) | map({
+            project: .[0].project,
+            commits: [.[] | {title: .title, message: .message}]
+        }))
+    })
+')
+
+log "Grupisano po autorima. Šaljem Claude-u na sumarizaciju..."
+
+# --- 6. Claude CLI sumarizacija ---
+PROMPT="Dobijaš JSON podatke o Git commitovima članova tima za $DAY_LABEL.
+
+Za svakog autora napravi sažetak na SRPSKOM jeziku u sledećem formatu:
+
+👤 *Ime Prezime*
+
+📁 _Naziv projekta_
+Sažetak u 2-3 rečenice šta je urađeno na tom projektu.
+
+📁 _Drugi projekat_
+Sažetak u 2-3 rečenice.
+
+---
+
+Pravila:
+- Piši na srpskom jeziku (latinica)
+- Za svaki projekat napiši 2-3 rečenice koje opisuju šta je urađeno
+- Koristi Telegram Markdown formatiranje: *bold*, _italic_
+- Odvoji autore sa --- linijom
+- Ne ponavljaj commit poruke doslovno, već ih sažmi smisleno
+- Ako commit poruke nisu dovoljno jasne, opiši šta je najverovatnije urađeno na osnovu konteksta
+- Ne dodaj nikakav uvod ili zaključak, samo sadržaj izveštaja
+
+JSON podaci:
+$GROUPED"
+
+DIGEST=$(echo "$PROMPT" | env -u CLAUDECODE claude --print --model sonnet 2>/dev/null) || {
+    send_error "Claude CLI greška pri generisanju sažetka"
+    exit 1
+}
+
+if [[ -z "$DIGEST" ]]; then
+    send_error "Claude CLI vratio prazan odgovor"
+    exit 1
+fi
+
+log "Sažetak generisan (${#DIGEST} karaktera)"
+
+# --- 7. Slanje u Telegram ---
+# Dodaj header
+FULL_MESSAGE="📋 *DNEVNI GITLAB IZVEŠTAJ*
+📅 $DAY_LABEL
+
+$DIGEST
+
+🕐 Generisano: $(TZ='Europe/Belgrade' date '+%H:%M:%S')"
+
+if [[ "$DRY_RUN" == true ]]; then
+    echo ""
+    echo "========== DIGEST OUTPUT =========="
+    echo "$FULL_MESSAGE"
+    echo "==================================="
+    echo ""
+    echo "Ukupno karaktera: ${#FULL_MESSAGE}"
+    log "Dry-run završen"
+    exit 0
+fi
+
+log "Slanje u Telegram..."
+
+# Split logika za duge poruke (Telegram limit ~4096 karaktera)
+send_telegram_message() {
+    local text="$1"
+    php -r "
+        require_once '$SCRIPT_DIR/NotifierBot.php';
+
+        \$text = file_get_contents('php://stdin');
+        \$maxLen = 4000;
+
+        if (mb_strlen(\$text) <= \$maxLen) {
+            \$parts = [\$text];
+        } else {
+            // Split na granicama paragrafa (dvostruki newline)
+            \$parts = [];
+            \$current = '';
+            \$paragraphs = explode(\"\n\n\", \$text);
+
+            foreach (\$paragraphs as \$para) {
+                if (mb_strlen(\$current . \"\n\n\" . \$para) > \$maxLen && \$current !== '') {
+                    \$parts[] = trim(\$current);
+                    \$current = \$para;
+                } else {
+                    \$current .= (\$current !== '' ? \"\n\n\" : '') . \$para;
+                }
+            }
+            if (\$current !== '') {
+                \$parts[] = trim(\$current);
+            }
+        }
+
+        \$total = count(\$parts);
+        foreach (\$parts as \$i => \$part) {
+            if (\$total > 1) {
+                \$part .= \"\n\n📄 Deo \" . (\$i + 1) . '/' . \$total;
+            }
+
+            // Direktno šaljemo preko Telegram API (digest tip ima svoj header)
+            \$url = 'https://api.telegram.org/bot' . trim('$TELEGRAM_BOT_TOKEN') . '/sendMessage';
+            \$ch = curl_init();
+            curl_setopt_array(\$ch, [
+                CURLOPT_URL => \$url,
+                CURLOPT_POST => true,
+                CURLOPT_POSTFIELDS => http_build_query([
+                    'chat_id' => trim('$TELEGRAM_CHAT_ID'),
+                    'text' => \$part,
+                    'parse_mode' => 'Markdown',
+                ]),
+                CURLOPT_RETURNTRANSFER => true,
+                CURLOPT_TIMEOUT => 10,
+            ]);
+            \$response = curl_exec(\$ch);
+            \$httpCode = curl_getinfo(\$ch, CURLINFO_HTTP_CODE);
+            curl_close(\$ch);
+
+            if (\$httpCode !== 200) {
+                fwrite(STDERR, \"Telegram API greška (HTTP \$httpCode): \$response\n\");
+                exit(1);
+            }
+
+            if (\$i < \$total - 1) {
+                sleep(1);
+            }
+        }
+        echo \"OK\";
+    " <<< "$text"
+}
+
+result=$(send_telegram_message "$FULL_MESSAGE") || {
+    send_error "Greška pri slanju digest-a u Telegram"
+    exit 1
+}
+
+if [[ "$result" == "OK" ]]; then
+    log "Digest uspešno poslat u Telegram"
+else
+    send_error "Neočekivan odgovor pri slanju: $result"
+    exit 1
+fi
+
+log "Završeno."
