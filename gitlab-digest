@@ -2,7 +2,7 @@
 #
 # gitlab-digest - Dnevni GitLab izveštaj za tim
 #
-# Prikuplja commitove sa GitLab-a za prethodni radni dan,
+# Prikuplja commitove sa GitLab-a za tekući radni dan,
 # generiše AI sažetak na srpskom jeziku putem Claude CLI,
 # i šalje rezultat u Telegram putem NotifierBot-a.
 #
@@ -97,16 +97,8 @@ log "Konfiguracija učitana. GitLab: $GITLAB_URL"
 # --- 2. Računanje vremenskog okvira ---
 TIME_DATA=$(php -r "
     date_default_timezone_set('Europe/Belgrade');
-    \$dow = (int)date('N'); // 1=Mon ... 7=Sun
-    if (\$dow == 1) {
-        // Ponedeljak - gledamo petak
-        \$target = strtotime('last Friday');
-        \$label = 'petak ' . date('d.m.Y.', \$target);
-    } else {
-        // Utorak-Petak - gledamo juče
-        \$target = strtotime('yesterday');
-        \$label = date('l', \$target) . ' ' . date('d.m.Y.', \$target);
-    }
+    \$target = strtotime('today');
+    \$label = date('l', \$target) . ' ' . date('d.m.Y.', \$target);
     \$since = date('Y-m-d\T00:00:00', \$target);
     \$until = date('Y-m-d\T23:59:59', \$target);
     echo \"\$since|\$until|\$label\";
@@ -242,16 +234,16 @@ Format:
 👤 *username*
 
 📁 _Naziv projekta_
-Sažetak u 2-3 rečenice šta je urađeno na tom projektu.
+Jedna rečenica šta je urađeno.
 
 📁 _Drugi projekat_
-Sažetak u 2-3 rečenice.
+Jedna rečenica šta je urađeno.
 
 ---
 
 Pravila:
 - Piši na srpskom jeziku (latinica)
-- Za svaki projekat napiši 2-3 rečenice koje opisuju šta je urađeno
+- Za svaki projekat napiši jednu kratku rečenicu koja opisuje šta je urađeno
 - Koristi Telegram Markdown formatiranje: *bold*, _italic_
 - Prikaži username tačno kako je dat u JSON-u (ne prevodi ga u ime i prezime)
 - Odvoji autore sa --- linijom
@@ -351,8 +343,26 @@ send_telegram_message() {
             curl_close(\$ch);
 
             if (\$httpCode !== 200) {
-                fwrite(STDERR, \"Telegram API greška (HTTP \$httpCode): \$response\n\");
-                exit(1);
+                // Fallback: pošalji bez Markdown ako parsiranje pukne
+                fwrite(STDERR, \"Markdown parse failed (HTTP \$httpCode), retrying without parse_mode...\n\");
+                \$ch = curl_init();
+                curl_setopt_array(\$ch, [
+                    CURLOPT_URL => \$url,
+                    CURLOPT_POST => true,
+                    CURLOPT_POSTFIELDS => http_build_query([
+                        'chat_id' => trim('$TELEGRAM_CHAT_ID'),
+                        'text' => \$part,
+                    ]),
+                    CURLOPT_RETURNTRANSFER => true,
+                    CURLOPT_TIMEOUT => 10,
+                ]);
+                \$response = curl_exec(\$ch);
+                \$httpCode = curl_getinfo(\$ch, CURLINFO_HTTP_CODE);
+                curl_close(\$ch);
+                if (\$httpCode !== 200) {
+                    fwrite(STDERR, \"Telegram API greška (HTTP \$httpCode): \$response\n\");
+                    exit(1);
+                }
             }
 
             if (\$i < \$total - 1) {
