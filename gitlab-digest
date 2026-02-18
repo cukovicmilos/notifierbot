@@ -266,6 +266,19 @@ fi
 
 log "Sažetak generisan (${#DIGEST} karaktera)"
 
+# Sanitizacija Markdown-a za Telegram (escape neparne _ i * koji lome parser)
+DIGEST=$(php -r "
+    \$text = file_get_contents('php://stdin');
+    // Zatvori neparne _ (italic) i * (bold) dodavanjem na kraj
+    foreach (['_', '*'] as \$ch) {
+        \$count = substr_count(\$text, \$ch);
+        if (\$count % 2 !== 0) {
+            \$text .= \$ch;
+        }
+    }
+    echo \$text;
+" <<< "$DIGEST")
+
 # --- 7. Slanje u Telegram ---
 # Dodaj header
 FULL_MESSAGE="📋 *DNEVNI GITLAB IZVEŠTAJ*
