@@ -178,11 +178,8 @@ while IFS=$'\t' read -r proj_id proj_name; do
             [.[] | select(.author_email | test("@studiopresent\\.com$"; "i")) |
             {
                 project: $pname,
-                author_name: .author_name,
                 author_email: .author_email,
-                title: .title,
-                message: .message,
-                created_at: .created_at
+                title: .title
             }]
         ')
 
@@ -217,7 +214,7 @@ GROUPED=$(echo "$ALL_COMMITS" | jq '
         author: .[0].author_email | split("@")[0],
         projects: (group_by(.project) | map({
             project: .[0].project,
-            commits: [.[] | {title: .title, message: .message}]
+            commits: ([.[] | .title] | unique)
         }))
     })
 ')
@@ -225,36 +222,11 @@ GROUPED=$(echo "$ALL_COMMITS" | jq '
 log "Grupisano po autorima. Šaljem Claude-u na sumarizaciju..."
 
 # --- 6. Claude CLI sumarizacija ---
-PROMPT="Dobijaš JSON podatke o Git commitovima članova tima za $DAY_LABEL.
+PROMPT="Git commitovi tima za $DAY_LABEL. Za svakog autora napiši sažetak na srpskom (latinica). Jedna rečenica po projektu. Format: 👤 *username* pa 📁 _projekat_ pa rečenica. Odvoji autore sa ---. Ne dodaj uvod/zaključak. Telegram Markdown (*bold*, _italic_).
 
-Polje \"author\" je username (email prefix). Za svakog autora napravi sažetak na SRPSKOM jeziku. Prikaži KOMPLETNO sav posao jednog čoveka, pa tek onda prelazi na sledećeg.
-
-Format:
-
-👤 *username*
-
-📁 _Naziv projekta_
-Jedna rečenica šta je urađeno.
-
-📁 _Drugi projekat_
-Jedna rečenica šta je urađeno.
-
----
-
-Pravila:
-- Piši na srpskom jeziku (latinica)
-- Za svaki projekat napiši jednu kratku rečenicu koja opisuje šta je urađeno
-- Koristi Telegram Markdown formatiranje: *bold*, _italic_
-- Prikaži username tačno kako je dat u JSON-u (ne prevodi ga u ime i prezime)
-- Odvoji autore sa --- linijom
-- Ne ponavljaj commit poruke doslovno, već ih sažmi smisleno
-- Ako commit poruke nisu dovoljno jasne, opiši šta je najverovatnije urađeno na osnovu konteksta
-- Ne dodaj nikakav uvod ili zaključak, samo sadržaj izveštaja
-
-JSON podaci:
 $GROUPED"
 
-DIGEST=$(echo "$PROMPT" | env -u CLAUDECODE claude --print --model sonnet 2>/dev/null) || {
+DIGEST=$(echo "$PROMPT" | env -u CLAUDECODE claude --print --model haiku 2>/dev/null) || {
     send_error "Claude CLI greška pri generisanju sažetka"
     exit 1
 }
