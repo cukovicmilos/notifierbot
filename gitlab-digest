@@ -222,7 +222,7 @@ GROUPED=$(echo "$ALL_COMMITS" | jq '
 log "Grupisano po autorima. Šaljem Claude-u na sumarizaciju..."
 
 # --- 6. Claude CLI sumarizacija ---
-PROMPT="Git commitovi tima za $DAY_LABEL. Za svakog autora napiši sažetak na srpskom (latinica). Jedna rečenica po projektu. Format: 👤 username (bez zvezdica, normalan font) pa 📁 samo poslednji folder projekta (npr gebisrce umesto k8s/drupal/gebisrce) pa rečenica. Prazan red između svakog projekta. Odvoji autore sa ---. Ne dodaj uvod/zaključak. Telegram Markdown (_italic_ za projekte).
+PROMPT="Git commitovi tima za $DAY_LABEL. Za svakog autora napiši sažetak na srpskom (latinica). Jedna rečenica po projektu. Format: 👤 username se piše SAMO JEDNOM na početku, a ispod toga izlistaj sve njegove projekte (📁 samo poslednji folder projekta, npr gebisrce umesto k8s/drupal/gebisrce, pa rečenica). NE ponavljaj ime autora ispred svakog projekta. Prazan red između svakog projekta. Odvoji autore sa ---. Ne dodaj uvod/zaključak. Telegram Markdown (_italic_ za projekte).
 
 $GROUPED"
 
