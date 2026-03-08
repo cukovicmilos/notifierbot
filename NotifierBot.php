@@ -30,6 +30,7 @@ class NotifierBot
         'success' => ['emoji' => '✅', 'title' => 'USPEH'],
         'test' => ['emoji' => '🔔', 'title' => 'TEST'],
         'digest' => ['emoji' => '📋', 'title' => 'DNEVNI GITLAB IZVEŠTAJ'],
+        'monitor' => ['emoji' => '🔍', 'title' => 'SISTEMSKI IZVEŠTAJ'],
     ];
 
     /**
