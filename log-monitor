@@ -17,6 +17,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 LOG_DIR="/var/log/notifierbot"
 LOG_FILE="$LOG_DIR/log-monitor.log"
 DRY_RUN=false
+WEEKLY=false
 SINCE="24 hours ago"
 SERVER_NAME="labubu"
 
@@ -24,6 +25,7 @@ SERVER_NAME="labubu"
 for arg in "$@"; do
     case "$arg" in
         --dry-run) DRY_RUN=true ;;
+        --weekly) WEEKLY=true ;;
         *) echo "Nepoznat argument: $arg" >&2; exit 1 ;;
     esac
 done
@@ -145,7 +147,7 @@ if [[ "$JOURNAL_ERROR_COUNT" -eq 0 ]] && \
    [[ "$FAILED_SERVICE_COUNT" -eq 0 ]] && \
    [[ "$DISK_PERCENT" -lt 80 ]] && \
    [[ "$SWAP_PERCENT" -lt 50 ]]; then
-    log "Pre-check: Sve čisto. Nema potrebe za Claude analizom. Izlaz."
+    log "Pre-check: Sve čisto. Nema potrebe za Claude analizom."
     if [[ "$DRY_RUN" == true ]]; then
         echo ""
         echo "========== PRE-CHECK: SVE OK =========="
@@ -157,6 +159,32 @@ if [[ "$JOURNAL_ERROR_COUNT" -eq 0 ]] && \
         echo "Disk: ${DISK_PERCENT}%"
         echo "Swap: ${SWAP_PERCENT}%"
         echo "======================================="
+    fi
+    if [[ "$WEEKLY" == true ]]; then
+        UPTIME=$(uptime -p 2>/dev/null | sed 's/up //')
+        LOAD=$(cat /proc/loadavg 2>/dev/null | awk '{print $1}')
+        WEEKLY_MSG="✅ *Sistem je stabilan*
+
+🖥️ Server: $SERVER_NAME
+📅 $(TZ='Europe/Belgrade' date '+%d.%m.%Y %H:%M')
+⏱️ Uptime: $UPTIME
+💾 Disk: ${DISK_PERCENT}%
+🔄 Swap: ${SWAP_PERCENT}%
+📊 Load: $LOAD
+🔐 SSH pokušaji: $SSH_FAILURE_COUNT
+🚀 Svi servisi rade"
+        log "Weekly: šaljem 'sve OK' poruku..."
+        if [[ "$DRY_RUN" == true ]]; then
+            echo ""
+            echo "========== WEEKLY PORUKA =========="
+            echo "$WEEKLY_MSG"
+            echo "==================================="
+        else
+            php -r "
+                require_once '$SCRIPT_DIR/NotifierBot.php';
+                NotifierBot::send('monitor', file_get_contents('php://stdin'));
+            " <<< "$WEEKLY_MSG" || send_error "Greška pri slanju weekly health poruke"
+        fi
     fi
     exit 0
 fi
