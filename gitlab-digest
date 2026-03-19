@@ -3,7 +3,7 @@
 # gitlab-digest - Dnevni GitLab izveštaj za tim
 #
 # Prikuplja commitove sa GitLab-a za tekući radni dan,
-# generiše AI sažetak na srpskom jeziku putem Claude CLI,
+# generiše AI sažetak na srpskom jeziku putem OpenCode CLI,
 # i šalje rezultat u Telegram putem NotifierBot-a.
 #
 # Korišćenje:
@@ -94,6 +94,8 @@ GITLAB_URL="${GITLAB_URL%/}"
 
 log "Konfiguracija učitana. GitLab: $GITLAB_URL"
 
+export GITLAB_TOKEN GITLAB_URL SINCE UNTIL
+
 # --- 2. Računanje vremenskog okvira ---
 TIME_DATA=$(php -r "
     date_default_timezone_set('Europe/Belgrade');
@@ -151,29 +153,32 @@ if [[ "$PROJECT_COUNT" -eq 0 ]]; then
     exit 0
 fi
 
-# --- 4. Prikupljanje commitova za svaki projekat ---
+# --- 4. Prikupljanje commitova za svaki projekat (paralelno) ---
 log "Prikupljanje commitova..."
 
-ALL_COMMITS="[]"
-projects_with_commits=0
+TEMP_DIR=$(mktemp -d)
+trap "rm -rf $TEMP_DIR" EXIT
 
-while IFS=$'\t' read -r proj_id proj_name; do
-    page=1
+fetch_project_commits() {
+    local proj_id="$1"
+    local proj_name="$2"
+    local out_file="$3"
+    
+    local all_commits="[]"
+    local page=1
+    
     while true; do
+        local commits
         commits=$(curl -s --fail-with-body \
             --header "PRIVATE-TOKEN: $GITLAB_TOKEN" \
             "${GITLAB_URL}/api/v4/projects/${proj_id}/repository/commits?since=${SINCE}&until=${UNTIL}&all=true&per_page=100&page=${page}" \
-            2>&1) || {
-            log "Upozorenje: Greška pri čitanju commitova za projekat $proj_name (ID: $proj_id), preskačem"
-            break
-        }
-
+            2>/dev/null) || break
+        
+        local count
         count=$(echo "$commits" | jq 'length' 2>/dev/null || echo "0")
-        if [[ "$count" -eq 0 ]]; then
-            break
-        fi
-
-        # Dodaj ime projekta svakom commitu i filtriraj @studiopresent.com
+        [[ "$count" -eq 0 ]] && break
+        
+        local filtered
         filtered=$(echo "$commits" | jq --arg pname "$proj_name" '
             [.[] | select(.author_email | test("@studiopresent\\.com$"; "i")) |
             {
@@ -181,20 +186,47 @@ while IFS=$'\t' read -r proj_id proj_name; do
                 author_email: .author_email,
                 title: .title
             }]
-        ')
-
-        filtered_count=$(echo "$filtered" | jq 'length')
-        if [[ "$filtered_count" -gt 0 ]]; then
-            ALL_COMMITS=$(echo "$ALL_COMMITS" "$filtered" | jq -s '.[0] + .[1]')
-            projects_with_commits=$((projects_with_commits + 1))
-        fi
-
-        if [[ "$count" -lt 100 ]]; then
-            break
-        fi
+        ' 2>/dev/null) || break
+        
+        all_commits=$(echo "$all_commits" "$filtered" | jq -s '.[0] + .[1]' 2>/dev/null)
+        
+        [[ "$count" -lt 100 ]] && break
         page=$((page + 1))
     done
+    
+    echo "$all_commits" > "$out_file"
+}
+
+export GITLAB_TOKEN GITLAB_URL SINCE UNTIL TEMP_DIR
+export -f fetch_project_commits
+
+MAX_JOBS=20
+jobs=()
+
+while IFS=$'\t' read -r proj_id proj_name; do
+    fetch_project_commits "$proj_id" "$proj_name" "$TEMP_DIR/${proj_id}.json" &
+    jobs+=($!)
+    
+    if (( ${#jobs[@]} >= MAX_JOBS )); then
+        wait "${jobs[0]}"
+        jobs=("${jobs[@]:1}")
+    fi
 done < <(echo "$ALL_PROJECTS" | jq -r '.[] | [.id, .path_with_namespace] | @tsv')
+
+wait
+
+ALL_COMMITS="[]"
+projects_with_commits=0
+
+for file in "$TEMP_DIR"/*.json; do
+    [[ -f "$file" ]] || continue
+    content=$(cat "$file")
+    count=$(echo "$content" | jq 'length' 2>/dev/null || echo "0")
+    if [[ "$count" -gt 0 ]]; then
+        ALL_COMMITS=$(echo "$ALL_COMMITS" "$content" | jq -s '.[0] + .[1]')
+        projects_with_commits=$((projects_with_commits + 1))
+    fi
+done
 
 TOTAL_COMMITS=$(echo "$ALL_COMMITS" | jq 'length')
 log "Ukupno $TOTAL_COMMITS commitova od @studiopresent.com korisnika iz $projects_with_commits projekata"
@@ -219,20 +251,25 @@ GROUPED=$(echo "$ALL_COMMITS" | jq '
     })
 ')
 
-log "Grupisano po autorima. Šaljem Claude-u na sumarizaciju..."
+log "Grupisano po autorima. Šaljem OpenCode-u na sumarizaciju..."
 
-# --- 6. Claude CLI sumarizacija ---
+# --- 6. OpenCode CLI sumarizacija ---
 PROMPT="Git commitovi tima za $DAY_LABEL. Za svakog autora napiši sažetak na srpskom (latinica). Jedna rečenica po projektu. Format: 👤 username se piše SAMO JEDNOM na početku, a ispod toga izlistaj sve njegove projekte (📁 samo poslednji folder projekta, npr gebisrce umesto k8s/drupal/gebisrce, pa rečenica). NE ponavljaj ime autora ispred svakog projekta. Prazan red između svakog projekta. Odvoji autore sa ---. Ne dodaj uvod/zaključak. Telegram Markdown (_italic_ za projekte).
 
 $GROUPED"
 
-DIGEST=$(echo "$PROMPT" | env -u CLAUDECODE claude --print --model haiku 2>/dev/null) || {
-    send_error "Claude CLI greška pri generisanju sažetka"
+RESPONSE=$(echo "$PROMPT" | opencode run --format json 2>/dev/null) || {
+    send_error "OpenCode CLI greška pri generisanju sažetka"
+    exit 1
+}
+
+DIGEST=$(echo "$RESPONSE" | jq -r 'select(.type == "text") | .part.text') || {
+    send_error "Greška pri parsiranju OpenCode odgovora"
     exit 1
 }
 
 if [[ -z "$DIGEST" ]]; then
-    send_error "Claude CLI vratio prazan odgovor"
+    send_error "OpenCode vratio prazan odgovor"
     exit 1
 fi
 
