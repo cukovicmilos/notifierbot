@@ -8,7 +8,7 @@
 #
 # Korišćenje:
 #   log-monitor            # Pokreni analizu i pošalji ako treba
-#   log-monitor --dry-run  # Samo prikaži prikupljene podatke i Claude analizu
+#   log-monitor --dry-run  # Samo prikaži prikupljene podatke i OpenCode analizu
 #
 
 set -euo pipefail
@@ -147,7 +147,7 @@ if [[ "$JOURNAL_ERROR_COUNT" -eq 0 ]] && \
    [[ "$FAILED_SERVICE_COUNT" -eq 0 ]] && \
    [[ "$DISK_PERCENT" -lt 80 ]] && \
    [[ "$SWAP_PERCENT" -lt 50 ]]; then
-    log "Pre-check: Sve čisto. Nema potrebe za Claude analizom."
+    log "Pre-check: Sve čisto. Nema potrebe za OpenCode analizom."
     if [[ "$DRY_RUN" == true ]]; then
         echo ""
         echo "========== PRE-CHECK: SVE OK =========="
@@ -189,9 +189,9 @@ if [[ "$JOURNAL_ERROR_COUNT" -eq 0 ]] && \
     exit 0
 fi
 
-log "Pre-check: Pronađeni nalazi, šaljem Claude-u na analizu..."
+    log "Pre-check: Pronađeni nalazi, šaljem OpenCode-u na analizu..."
 
-# --- 4. Priprema podataka za Claude ---
+# --- 4. Priprema podataka za OpenCode ---
 REPORT="=== SISTEMSKI PODACI ZA POSLEDNJIH 24h ===
 Server: $SERVER_NAME (Ubuntu 24.04)
 Datum: $(TZ='Europe/Belgrade' date '+%d.%m.%Y %H:%M')
@@ -238,8 +238,8 @@ if [[ "$DRY_RUN" == true ]]; then
     echo ""
 fi
 
-# --- 5. Claude trijaž ---
-log "Pokrećem Claude analizu..."
+# --- 5. OpenCode trijaž ---
+log "Pokrećem OpenCode analizu..."
 
 PROMPT="Ti si sistem administrator. Analiziraj sledeće sistemske logove i odluči da li ima nešto zabrinjavajuće.
 
@@ -270,35 +270,40 @@ Samo stavke sa emoji indikatorima, jedna po redu. Kratko i jasno. Bez uvoda i za
 
 $REPORT"
 
-ANALYSIS=$(echo "$PROMPT" | env -u CLAUDECODE claude --print --model haiku 2>/dev/null) || {
-    send_error "Claude CLI greška pri analizi logova"
+RESPONSE=$(echo "$PROMPT" | opencode run --format json 2>/dev/null) || {
+    send_error "OpenCode CLI greška pri analizi logova"
+    exit 1
+}
+
+ANALYSIS=$(echo "$RESPONSE" | jq -r 'select(.type == "text") | .part.text') || {
+    send_error "Greška pri parsiranju OpenCode odgovora"
     exit 1
 }
 
 if [[ -z "$ANALYSIS" ]]; then
-    send_error "Claude CLI vratio prazan odgovor"
+    send_error "OpenCode vratio prazan odgovor"
     exit 1
 fi
 
-log "Claude analiza završena: ${#ANALYSIS} karaktera"
+log "OpenCode analiza završena: ${#ANALYSIS} karaktera"
 
 if [[ "$DRY_RUN" == true ]]; then
-    echo "========== CLAUDE ANALIZA =========="
+    echo "========== OPENCODE ANALIZA =========="
     echo "$ANALYSIS"
-    echo "===================================="
+    echo "======================================"
 fi
 
 # --- 6. Provera da li treba slati ---
 if [[ "$ANALYSIS" == "NISTA" ]] || [[ "$ANALYSIS" == "NIŠTA" ]]; then
-    log "Claude kaže: NISTA zabrinjavajuće. Bez slanja."
+    log "OpenCode kaže: NISTA zabrinjavajuće. Bez slanja."
     if [[ "$DRY_RUN" == true ]]; then
         echo ""
-        echo ">>> Claude je odlučio da nema ničeg za prijavljivanje."
+        echo ">>> OpenCode je odlučio da nema ničeg za prijavljivanje."
     fi
     exit 0
 fi
 
-log "Claude je pronašao nalaze. Pripremam Telegram poruku..."
+log "OpenCode je pronašao nalaze. Pripremam Telegram poruku..."
 
 # --- 7. Sanitizacija i slanje ---
 # Sanitizacija Markdown-a za Telegram
