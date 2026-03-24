@@ -171,7 +171,7 @@ fetch_project_commits() {
         local commits
         commits=$(curl -s --fail-with-body \
             --header "PRIVATE-TOKEN: $GITLAB_TOKEN" \
-            "${GITLAB_URL}/api/v4/projects/${proj_id}/repository/commits?since=${SINCE}&until=${UNTIL}&all=true&per_page=100&page=${page}" \
+            "${GITLAB_URL}/api/v4/projects/${proj_id}/repository/commits?since=${SINCE}&until=${UNTIL}&ref_name=dev&per_page=100&page=${page}" \
             2>/dev/null) || break
         
         local count
@@ -181,6 +181,7 @@ fetch_project_commits() {
         local filtered
         filtered=$(echo "$commits" | jq --arg pname "$proj_name" '
             [.[] | select(.author_email | test("@studiopresent\\.com$"; "i")) |
+            select(.parent_ids | length <= 1) |
             {
                 project: $pname,
                 author_email: .author_email,
@@ -254,7 +255,11 @@ GROUPED=$(echo "$ALL_COMMITS" | jq '
 log "Grupisano po autorima. Šaljem OpenCode-u na sumarizaciju..."
 
 # --- 6. OpenCode CLI sumarizacija ---
-PROMPT="Git commitovi tima za $DAY_LABEL. Za svakog autora napiši sažetak na srpskom (latinica). Jedna rečenica po projektu. Format: 👤 username se piše SAMO JEDNOM na početku, a ispod toga izlistaj sve njegove projekte (📁 samo poslednji folder projekta, npr gebisrce umesto k8s/drupal/gebisrce, pa rečenica). NE ponavljaj ime autora ispred svakog projekta. Prazan red između svakog projekta. Odvoji autore sa ---. Ne dodaj uvod/zaključak. Telegram Markdown (_italic_ za projekte).
+PROMPT="Git commitovi tima za $DAY_LABEL (samo dev branch, bez merge commit-a). Za svakog autora napiši sažetak na srpskom (latinica). Jedna rečenica po projektu. Format: 👤 username se piše SAMO JEDNOM na početku, a ispod toga izlistaj sve njegove projekte (📁 samo poslednji folder projekta, npr gebisrce umesto k8s/drupal/gebisrce, pa rečenica). NE ponavljaj ime autora ispred svakog projekta. 
+
+IZMEĐU SVAKOG PROJEKTA DODAJ TAČNO JEDAN PRAZAN RED.
+
+Odvoji autore sa ---. Ne dodaj uvod/zaključak. Telegram Markdown (_italic_ za projekte).
 
 $GROUPED"
 
@@ -274,6 +279,23 @@ if [[ -z "$DIGEST" ]]; then
 fi
 
 log "Sažetak generisan (${#DIGEST} karaktera)"
+
+# Dodaj prazan red između projekata
+DIGEST=$(php -r "
+    \$text = file_get_contents('php://stdin');
+    \$lines = explode(\"\\n\", \$text);
+    \$result = [];
+    for (\$i = 0; \$i < count(\$lines); \$i++) {
+        \$result[] = \$lines[\$i];
+        // Ako je linija projekt (počinje sa 📁), a sledeća takodje počinje sa 📁, dodaj prazan red
+        if (isset(\$lines[\$i + 1]) && 
+            preg_match('/^📁/', \$lines[\$i]) && 
+            preg_match('/^📁/', \$lines[\$i + 1])) {
+            \$result[] = '';
+        }
+    }
+    echo implode(\"\\n\", \$result);
+" <<< "$DIGEST")
 
 # Sanitizacija Markdown-a za Telegram (escape neparne _ i * koji lome parser)
 DIGEST=$(php -r "
