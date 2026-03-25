@@ -259,7 +259,7 @@ PROMPT="Git commitovi tima za $DAY_LABEL (samo dev branch, bez merge commit-a). 
 
 IZMEĐU SVAKOG PROJEKTA DODAJ TAČNO JEDAN PRAZAN RED.
 
-Odvoji autore sa ---. Ne dodaj uvod/zaključak. Telegram Markdown (_italic_ za projekte).
+Odvoji autore sa ---. Ne dodaj uvod/zaključak. Telegram Markdown (_italic_ za projekte). NE koristi **bold** formatiranje za imena korisnika - piši ih bez asteriska.
 
 $GROUPED"
 
