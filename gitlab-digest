@@ -2,7 +2,7 @@
 #
 # gitlab-digest - Dnevni GitLab izveštaj za tim
 #
-# Prikuplja commitove sa GitLab-a za tekući radni dan,
+# Prikuplja commitove sa GitLab-a za tekući dan (svaki dan u 20:00),
 # generiše AI sažetak na srpskom jeziku putem OpenCode CLI,
 # i šalje rezultat u Telegram putem NotifierBot-a.
 #
