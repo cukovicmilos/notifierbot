@@ -163,38 +163,44 @@ fetch_project_commits() {
     local proj_id="$1"
     local proj_name="$2"
     local out_file="$3"
-    
+
     local all_commits="[]"
     local page=1
-    
+
     while true; do
         local commits
         commits=$(curl -s --fail-with-body \
             --header "PRIVATE-TOKEN: $GITLAB_TOKEN" \
             "${GITLAB_URL}/api/v4/projects/${proj_id}/repository/commits?since=${SINCE}&until=${UNTIL}&ref_name=dev&per_page=100&page=${page}" \
             2>/dev/null) || break
-        
+
         local count
         count=$(echo "$commits" | jq 'length' 2>/dev/null || echo "0")
         [[ "$count" -eq 0 ]] && break
-        
+
+        # Debug: loguj sve autore pre filtriranja
+        local raw_authors
+        raw_authors=$(echo "$commits" | jq -r '[.[].author_email] | unique | .[]' 2>/dev/null | tr '\n' ', ')
+        if [[ -n "$raw_authors" && "$DRY_RUN" == true ]]; then
+            echo "[DEBUG] $proj_name raw autori: $raw_authors" >&2
+        fi
+
         local filtered
         filtered=$(echo "$commits" | jq --arg pname "$proj_name" '
             [.[] | select(.author_email | test("@studiopresent\\.com$"; "i")) |
-            select(.parent_ids | length <= 1) |
             {
                 project: $pname,
                 author_email: .author_email,
                 title: .title
             }]
         ' 2>/dev/null) || break
-        
+
         all_commits=$(echo "$all_commits" "$filtered" | jq -s '.[0] + .[1]' 2>/dev/null)
-        
+
         [[ "$count" -lt 100 ]] && break
         page=$((page + 1))
     done
-    
+
     echo "$all_commits" > "$out_file"
 }
 
@@ -207,7 +213,7 @@ jobs=()
 while IFS=$'\t' read -r proj_id proj_name; do
     fetch_project_commits "$proj_id" "$proj_name" "$TEMP_DIR/${proj_id}.json" &
     jobs+=($!)
-    
+
     if (( ${#jobs[@]} >= MAX_JOBS )); then
         wait "${jobs[0]}"
         jobs=("${jobs[@]:1}")
@@ -231,6 +237,12 @@ done
 
 TOTAL_COMMITS=$(echo "$ALL_COMMITS" | jq 'length')
 log "Ukupno $TOTAL_COMMITS commitova od @studiopresent.com korisnika iz $projects_with_commits projekata"
+
+# Loguj pronađene autore za debug
+AUTHORS=$(echo "$ALL_COMMITS" | jq -r '[.[].author_email] | unique | .[]' 2>/dev/null | sort)
+if [[ -n "$AUTHORS" ]]; then
+    log "Autori u izveštaju: $(echo "$AUTHORS" | tr '\n' ', ')"
+fi
 
 if [[ "$TOTAL_COMMITS" -eq 0 ]]; then
     log "Nema commitova za izveštaj. Prekidam."
