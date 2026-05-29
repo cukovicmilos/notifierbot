@@ -275,7 +275,7 @@ Odvoji autore sa ---. Ne dodaj uvod/zaključak. Telegram Markdown (_italic_ za p
 
 $GROUPED"
 
-RESPONSE=$(echo "$PROMPT" | opencode run --format json 2>/dev/null) || {
+RESPONSE=$(echo "$PROMPT" | opencode run --format json --model opencode-go/deepseek-v4-flash 2>/dev/null) || {
     send_error "OpenCode CLI greška pri generisanju sažetka"
     exit 1
 }
@@ -286,8 +286,24 @@ DIGEST=$(echo "$RESPONSE" | jq -r 'select(.type == "text") | .part.text') || {
 }
 
 if [[ -z "$DIGEST" ]]; then
-    send_error "OpenCode vratio prazan odgovor"
-    exit 1
+    # Dijagnostika: sačuvaj metrike i poslednji step za debug
+    RESPONSE_LINES=$(echo "$RESPONSE" | wc -l)
+    RESPONSE_BYTES=$(echo -n "$RESPONSE" | wc -c)
+    TOOL_COUNT=$(echo "$RESPONSE" | jq -s 'map(select(.type == "tool_use")) | length' 2>/dev/null || echo "0")
+    TEXT_COUNT=$(echo "$RESPONSE" | jq -s 'map(select(.type == "text")) | length' 2>/dev/null || echo "0")
+    LAST_FINISH=$(echo "$RESPONSE" | jq -r 'select(.type == "step_finish") | .part.reason' 2>/dev/null | tail -1)
+    # Sačuvaj raw RESPONSE u temp fajl za kasniju analizu
+    echo "$RESPONSE" > "/tmp/opencode-gitlab-digest-debug-$(date +%Y%m%d-%H%M%S).jsonl"
+
+    # Drugi pokušaj sa --pure flagom (bez eksternih plugina) i --dangerously-skip-permissions
+    log "OpenCode vratio prazan odgovor (lines=$RESPONSE_LINES, bytes=$RESPONSE_BYTES, tool_calls=$TOOL_COUNT, text_parts=$TEXT_COUNT, last_reason=$LAST_FINISH). Pokušavam ponovo..."
+    RESPONSE=$(echo "$PROMPT" | opencode run --format json --model opencode-go/deepseek-v4-flash --pure --dangerously-skip-permissions 2>/dev/null) || true
+    DIGEST=$(echo "$RESPONSE" | jq -r 'select(.type == "text") | .part.text') || true
+
+    if [[ -z "$DIGEST" ]]; then
+        send_error "OpenCode vratio prazan odgovor i iz drugog pokušaja"
+        exit 1
+    fi
 fi
 
 log "Sažetak generisan (${#DIGEST} karaktera)"

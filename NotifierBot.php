@@ -31,6 +31,7 @@ class NotifierBot
         'test' => ['emoji' => '🔔', 'title' => 'TEST'],
         'digest' => ['emoji' => '📋', 'title' => 'DNEVNI GITLAB IZVEŠTAJ'],
         'monitor' => ['emoji' => '🔍', 'title' => 'SISTEMSKI IZVEŠTAJ'],
+        'instagram' => ['emoji' => '📸', 'title' => 'NOVI INSTAGRAM POST'],
     ];
 
     /**
@@ -146,6 +147,10 @@ class NotifierBot
             'count' => '🔢',
             'path' => '📁',
             'server' => '🖥️',
+            'profile' => '👤',
+            'link' => '🔗',
+            'date' => '📅',
+            'caption' => '📝',
         ];
 
         return $emojis[strtolower($key)] ?? '•';
@@ -170,6 +175,10 @@ class NotifierBot
             'count' => 'Broj',
             'path' => 'Putanja',
             'server' => 'Server',
+            'profile' => 'Profil',
+            'link' => 'Link',
+            'date' => 'Datum',
+            'caption' => 'Opis',
         ];
 
         return $labels[strtolower($key)] ?? ucfirst($key);

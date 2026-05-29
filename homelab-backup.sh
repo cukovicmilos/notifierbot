@@ -85,6 +85,10 @@ backup_dir /var/www/html/klopas/data "${WORK_DIR}/klopas/data"
 backup_files /var/www/html/legomil/data "${WORK_DIR}/legomil/data" "*.md"
 backup_files /var/www/html/crneploce/records "${WORK_DIR}/crneploce/records" "*.json"
 backup_dir /var/www/html/troskovnik/data "${WORK_DIR}/troskovnik/data"
+backup_dir /var/www/html/commandcentar "${WORK_DIR}/commandcentar"
+backup_dir /var/www/html/servmon "${WORK_DIR}/servmon"
+backup_dir /var/www/html/notifierbot "${WORK_DIR}/notifierbot"
+backup_dir /var/www/html/socmon "${WORK_DIR}/socmon"
 
 # 3. Konfiguracijski fajlovi (.env)
 echo "Backup konfiguracija..."
@@ -94,6 +98,7 @@ backup_config /var/www/html/klopas/.env "${WORK_DIR}/config/klopas.env"
 backup_config /var/www/html/legomil/.env "${WORK_DIR}/config/legomil.env"
 backup_config /var/www/html/troskovnik/.env "${WORK_DIR}/config/troskovnik.env"
 backup_config /var/www/html/crneploce/config.php "${WORK_DIR}/config/crneploce-config.php"
+backup_config /var/www/html/socmon/.env "${WORK_DIR}/config/socmon.env"
 
 # 4. Kreiraj ZIP
 echo "Kreiram ZIP arhivu..."

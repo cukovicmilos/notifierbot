@@ -18,7 +18,7 @@ require_once __DIR__ . '/NotifierBot.php';
 if ($argc < 3) {
     fwrite(STDERR, "Korišćenje: notify <type> <message> [--key=value ...]\n");
     fwrite(STDERR, "\n");
-    fwrite(STDERR, "Tipovi: backup, registration, error, warning, info, success, test\n");
+    fwrite(STDERR, "Tipovi: backup, registration, error, warning, info, success, test, instagram\n");
     fwrite(STDERR, "\n");
     fwrite(STDERR, "Primeri:\n");
     fwrite(STDERR, "  notify backup \"Backup završen\" --size=\"2.5MB\" --file=\"backup.zip\"\n");
